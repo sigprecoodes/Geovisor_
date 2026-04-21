@@ -4,7 +4,7 @@ export const CONFIG = {
     'data/Cuadrilla_2.geojson',
     'data/Cuadrilla_3.geojson',
     'data/Cuadrilla_4.geojson',
-    'data/cuadrilla_5.geojson',
+    'data/Cuadrilla_5.geojson',
     'data/Cuadrilla_6.geojson',
     'data/Cuadrilla_7.geojson',
     'data/Cuadrilla_8.geojson',
