@@ -9,6 +9,7 @@ export const CONFIG = {
     'data/Cuadrilla_7.geojson',
     'data/Cuadrilla_8.geojson',
     'data/Cuadrilla_9.geojson',
+    'data/Cuadrilla_10.geojson',
     'data/Cuadrilla_11.geojson'
   ],
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzorYg7lSDUpYprv0wc4l_vdpHh7zO0uQGX96XZrmOoUwv6q_O-EEP_aVsrdeKY89TZ/exec',
