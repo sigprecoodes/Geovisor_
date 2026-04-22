@@ -72,6 +72,10 @@ function obtenerDiasEjecucion(props) {
   );
 }
 
+function obtenerQuincena(props) {
+  return props.quincena || props.Quincena || props.QUINCENA || '';
+}
+
 function esNovedadEjecucion(props) {
   const estado = String(props?.estado || '').trim();
   return estado === 'Ejecutado con novedad' || estado === 'No ejecutado con novedad';
@@ -90,7 +94,7 @@ function esNovedadActiva(value) {
    Context fetch
 ========================= */
 
-function buildContextUrl({ microrruta, cuadrilla, lote }) {
+function buildContextUrl({ microrruta, cuadrilla, lote, quincena }) {
   const callback = `ctx_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
   const url = new URL(CONFIG.WEBAPP_URL);
 
@@ -100,24 +104,27 @@ function buildContextUrl({ microrruta, cuadrilla, lote }) {
   url.searchParams.set('microrruta', microrruta || '');
   url.searchParams.set('cuadrilla', cuadrilla || '');
   url.searchParams.set('lote', lote || '');
+  url.searchParams.set('quincena', quincena || '');
 
   return { url: url.toString(), callback };
 }
 
-function fetchMicrorrutaContext({ microrruta, cuadrilla, lote }) {
+function fetchMicrorrutaContext({ microrruta, cuadrilla, lote, quincena }) {
   return new Promise((resolve, reject) => {
     if (!microrruta || !cuadrilla) {
       resolve(null);
       return;
     }
 
-    const { url, callback } = buildContextUrl({ microrruta, cuadrilla, lote });
+    const { url, callback } = buildContextUrl({ microrruta, cuadrilla, lote, quincena });
     const script = document.createElement('script');
 
     window[callback] = (res) => {
       try {
         delete window[callback];
-      } catch (_) {}
+      } catch (_) {
+        // noop
+      }
 
       script.remove();
 
@@ -132,7 +139,9 @@ function fetchMicrorrutaContext({ microrruta, cuadrilla, lote }) {
     script.onerror = () => {
       try {
         delete window[callback];
-      } catch (_) {}
+      } catch (_) {
+        // noop
+      }
 
       script.remove();
       reject(new Error('No fue posible cargar el detalle de la microrruta'));
@@ -147,22 +156,14 @@ function fetchMicrorrutaContext({ microrruta, cuadrilla, lote }) {
    Render detalle novedad
 ========================= */
 
-function renderNovedadActiva(detalle) {
-  const registro = detalle?.registro || {};
-  const activa = registro?.novedad_activa || null;
-
-  if (!activa) {
-    return `
-      <div class="detail-item full-width">
-        <span class="detail-label">Novedad activa reportada</span>
-        <span class="detail-value">Sin novedad activa</span>
-      </div>
-    `;
-  }
+function renderNovedadItem(activa, index = 0) {
+  const titulo = index > 0
+    ? `Tipo de novedad activa ${index + 1}`
+    : 'Tipo de novedad activa';
 
   return `
     <div class="detail-item full-width detail-alert">
-      <span class="detail-label">Tipo de novedad activa</span>
+      <span class="detail-label">${titulo}</span>
       <span class="detail-value">${valorSeguro(activa.tipo_novedad || 'Sin tipo')}</span>
     </div>
 
@@ -186,6 +187,33 @@ function renderNovedadActiva(detalle) {
       <span class="detail-value">${valorSeguro(formatDateOnly(activa.fecha_fin_subsanacion))}</span>
     </div>
   `;
+}
+
+function renderNovedadActiva(detalle) {
+  const registro = detalle?.registro || {};
+  const activasLista = Array.isArray(detalle?.novedades_activas)
+    ? detalle.novedades_activas
+    : [];
+  const activaRegistro = registro?.novedad_activa || null;
+
+  let activas = [];
+
+  if (activasLista.length) {
+    activas = activasLista;
+  } else if (activaRegistro) {
+    activas = [activaRegistro];
+  }
+
+  if (!activas.length) {
+    return `
+      <div class="detail-item full-width">
+        <span class="detail-label">Novedad activa reportada</span>
+        <span class="detail-value">Sin novedad activa</span>
+      </div>
+    `;
+  }
+
+  return activas.map((activa, index) => renderNovedadItem(activa, index)).join('');
 }
 
 /* =========================
@@ -215,7 +243,8 @@ export function renderInfoPanel(feature) {
   const microrruta = obtenerMicrorruta(props);
   const cuadrilla = obtenerCuadrilla(props);
   const lote = obtenerLote(props);
-  const requestKey = `${microrruta}|${cuadrilla}|${feature.id || ''}`;
+  const quincena = obtenerQuincena(props);
+  const requestKey = `${microrruta}|${cuadrilla}|${lote}|${quincena}|${feature.id || ''}`;
   const mostrarNovedadEjecucion = esNovedadEjecucion(props);
 
   content.dataset.requestKey = requestKey;
@@ -252,6 +281,11 @@ export function renderInfoPanel(feature) {
         <div class="detail-item">
           <span class="detail-label">Semana</span>
           <span class="detail-value">${valorSeguro(obtenerSemana(props))}</span>
+        </div>
+
+        <div class="detail-item">
+          <span class="detail-label">Quincena</span>
+          <span class="detail-value">${valorSeguro(quincena || '-')}</span>
         </div>
 
         <div class="detail-item full-width">
@@ -313,7 +347,7 @@ export function renderInfoPanel(feature) {
     abrirReporteNovedad({ microrruta, cuadrilla, lote });
   });
 
-  fetchMicrorrutaContext({ microrruta, cuadrilla, lote })
+  fetchMicrorrutaContext({ microrruta, cuadrilla, lote, quincena })
     .then((detalle) => {
       if (content.dataset.requestKey !== requestKey) return;
 
@@ -328,12 +362,21 @@ export function renderInfoPanel(feature) {
       const container = document.getElementById('panel-novedad-extra');
       if (!container) return;
 
-      container.innerHTML = `
-        <div class="detail-item full-width">
-          <span class="detail-label">Novedad reportada activa</span>
-          <span class="detail-value">No fue posible cargar el detalle.</span>
-        </div>
-      `;
+      const hayNovedadActiva = esNovedadActiva(props.novedad_activa);
+
+      container.innerHTML = hayNovedadActiva
+        ? `
+          <div class="detail-item full-width detail-alert">
+            <span class="detail-label">Novedad activa reportada</span>
+            <span class="detail-value">Hay una novedad activa registrada, pero no fue posible cargar el detalle.</span>
+          </div>
+        `
+        : `
+          <div class="detail-item full-width">
+            <span class="detail-label">Novedad activa reportada</span>
+            <span class="detail-value">Sin novedad activa</span>
+          </div>
+        `;
     });
 }
 
@@ -400,7 +443,7 @@ export function renderLayersList() {
       <button class="route-item${selected}" data-feature-id="${feature.id}">
         <span class="route-title">${valorSeguro(obtenerMicrorruta(props))}</span>
         <span class="route-meta">
-          ${valorSeguro(props.cuadrilla_display || obtenerCuadrilla(props))} · 
+          ${valorSeguro(props.cuadrilla_display || obtenerCuadrilla(props))} ·
           Lote ${valorSeguro(obtenerLote(props))}
         </span>
         <span class="route-status">${valorSeguro(etiqueta)}</span>
@@ -543,4 +586,3 @@ export function setupUI(renderApp) {
     });
   });
 }
-
