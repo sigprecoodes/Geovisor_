@@ -8,9 +8,9 @@ import {
   slugifyState
 } from './utils.js';
 
-/* =========================
-   Helpers
-========================= */
+const MAX_RENDER_LIST = 100;
+const DETAIL_CACHE = new Map();
+
 
 function escapeHtml(value) {
   return String(value == null ? '' : value)
@@ -90,6 +90,59 @@ function esNovedadActiva(value) {
   );
 }
 
+function getDetailCacheKey({ microrruta, cuadrilla, lote, quincena }) {
+  return [
+    String(microrruta || '').trim().toUpperCase(),
+    String(cuadrilla || '').trim().toUpperCase(),
+    String(lote || '').trim().toUpperCase(),
+    String(quincena || '').trim().toUpperCase()
+  ].join('|');
+}
+
+function invalidateVisibleCache() {
+  STATE._visibleCache = null;
+  STATE._visibleCacheKey = '';
+}
+
+export function limpiarCacheDetalle() {
+  DETAIL_CACHE.clear();
+}
+
+function getLayerByFeatureId(featureId) {
+  if (!featureId) return null;
+
+  if (STATE.layerIndex && STATE.layerIndex[featureId]) {
+    return STATE.layerIndex[featureId];
+  }
+
+  if (!STATE.geojsonLayer) return null;
+
+  let found = null;
+
+  STATE.geojsonLayer.eachLayer((layer) => {
+    if (!found && String(layer.feature?.id) === String(featureId)) {
+      found = layer;
+    }
+  });
+
+  return found;
+}
+
+function zoomToFeature(feature) {
+  if (!feature || !STATE.map) return;
+
+  const layer = getLayerByFeatureId(feature.id);
+  if (!layer) return;
+
+  const bounds = layer.getBounds?.();
+
+  if (bounds?.isValid?.()) {
+    STATE.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+  } else if (layer.getLatLng) {
+    STATE.map.flyTo(layer.getLatLng(), 18);
+  }
+}
+
 /* =========================
    Context fetch
 ========================= */
@@ -122,9 +175,7 @@ function fetchMicrorrutaContext({ microrruta, cuadrilla, lote, quincena }) {
     window[callback] = (res) => {
       try {
         delete window[callback];
-      } catch (_) {
-        // noop
-      }
+      } catch (_) {}
 
       script.remove();
 
@@ -139,9 +190,7 @@ function fetchMicrorrutaContext({ microrruta, cuadrilla, lote, quincena }) {
     script.onerror = () => {
       try {
         delete window[callback];
-      } catch (_) {
-        // noop
-      }
+      } catch (_) {}
 
       script.remove();
       reject(new Error('No fue posible cargar el detalle de la microrruta'));
@@ -152,14 +201,25 @@ function fetchMicrorrutaContext({ microrruta, cuadrilla, lote, quincena }) {
   });
 }
 
+function fetchMicrorrutaContextCached(params) {
+  const key = getDetailCacheKey(params);
+
+  if (DETAIL_CACHE.has(key)) {
+    return Promise.resolve(DETAIL_CACHE.get(key));
+  }
+
+  return fetchMicrorrutaContext(params).then((data) => {
+    DETAIL_CACHE.set(key, data);
+    return data;
+  });
+}
+
 /* =========================
    Render detalle novedad
 ========================= */
 
 function renderNovedadItem(activa, index = 0) {
-  const titulo = index > 0
-    ? `Tipo de novedad activa ${index + 1}`
-    : 'Tipo de novedad activa';
+  const titulo = index > 0 ? `Tipo de novedad activa ${index + 1}` : 'Tipo de novedad activa';
 
   return `
     <div class="detail-item full-width detail-alert">
@@ -191,9 +251,7 @@ function renderNovedadItem(activa, index = 0) {
 
 function renderNovedadActiva(detalle) {
   const registro = detalle?.registro || {};
-  const activasLista = Array.isArray(detalle?.novedades_activas)
-    ? detalle.novedades_activas
-    : [];
+  const activasLista = Array.isArray(detalle?.novedades_activas) ? detalle.novedades_activas : [];
   const activaRegistro = registro?.novedad_activa || null;
 
   let activas = [];
@@ -213,7 +271,9 @@ function renderNovedadActiva(detalle) {
     `;
   }
 
-  return activas.map((activa, index) => renderNovedadItem(activa, index)).join('');
+  return activas
+    .map((activa, index) => renderNovedadItem(activa, index))
+    .join('');
 }
 
 /* =========================
@@ -239,6 +299,8 @@ export function renderInfoPanel(feature) {
   const props = feature.properties || {};
   const panel = document.getElementById('info-panel');
   const content = document.getElementById('panel-content');
+
+  if (!panel || !content) return;
 
   const microrruta = obtenerMicrorruta(props);
   const cuadrilla = obtenerCuadrilla(props);
@@ -340,14 +402,14 @@ export function renderInfoPanel(feature) {
   panel.classList.remove('hidden');
 
   document.getElementById('btn-open-editor')?.addEventListener('click', () => {
-    abrirGestion({ microrruta, cuadrilla, lote });
+    abrirGestion({ microrruta, cuadrilla, lote, quincena });
   });
 
   document.getElementById('btn-report-novedad')?.addEventListener('click', () => {
-    abrirReporteNovedad({ microrruta, cuadrilla, lote });
+    abrirReporteNovedad({ microrruta, cuadrilla, lote, quincena });
   });
 
-  fetchMicrorrutaContext({ microrruta, cuadrilla, lote, quincena })
+  fetchMicrorrutaContextCached({ microrruta, cuadrilla, lote, quincena })
     .then((detalle) => {
       if (content.dataset.requestKey !== requestKey) return;
 
@@ -380,12 +442,16 @@ export function renderInfoPanel(feature) {
     });
 }
 
-/* =========================
-   Lista y zoom
-========================= */
-
 function getVisibleFeatures() {
-  return STATE.microrrutasData
+  const filtersKey = [...STATE.activeFilters].sort().join(',');
+  const dataLength = Array.isArray(STATE.microrrutasData) ? STATE.microrrutasData.length : 0;
+  const key = `${STATE.searchTerm || ''}|${filtersKey}|${dataLength}`;
+
+  if (STATE._visibleCacheKey === key && Array.isArray(STATE._visibleCache)) {
+    return STATE._visibleCache;
+  }
+
+  const result = (STATE.microrrutasData || [])
     .filter((feature) => {
       const props = feature.properties || {};
       return (
@@ -401,88 +467,79 @@ function getVisibleFeatures() {
       const micB = String(obtenerMicrorruta(b.properties) || '');
       return micA.localeCompare(micB);
     });
+
+  STATE._visibleCache = result;
+  STATE._visibleCacheKey = key;
+
+  return result;
 }
 
 function zoomToFirstVisibleResult() {
   const visible = getVisibleFeatures();
-  if (!visible.length || !STATE.geojsonLayer || !STATE.map) return;
+  if (!visible.length) return;
+  zoomToFeature(visible[0]);
+}
 
-  const firstFeature = visible[0];
+function handleLayerListClick(event) {
+  const btn = event.target.closest('[data-feature-id]');
+  if (!btn) return;
 
-  STATE.geojsonLayer.eachLayer((layer) => {
-    if (layer.feature?.id === firstFeature.id) {
-      const bounds = layer.getBounds?.();
-      if (bounds?.isValid?.()) {
-        STATE.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
-      } else if (layer.getLatLng) {
-        STATE.map.flyTo(layer.getLatLng(), 18);
-      }
-    }
-  });
+  const feature = (STATE.microrrutasData || []).find(
+    (item) => String(item.id) === String(btn.dataset.featureId)
+  );
+
+  if (!feature) return;
+
+  STATE.selectedFeatureId = feature.id;
+  renderInfoPanel(feature);
+  zoomToFeature(feature);
+  renderLayersList();
 }
 
 export function renderLayersList() {
   const list = document.getElementById('layers-list');
   if (!list) return;
 
-  const visible = getVisibleFeatures();
+  if (!list.dataset.listenerAttached) {
+    list.addEventListener('click', handleLayerListClick);
+    list.dataset.listenerAttached = 'true';
+  }
 
-  if (!visible.length) {
+  const allVisible = getVisibleFeatures();
+  const visible = allVisible.slice(0, MAX_RENDER_LIST);
+
+  if (!allVisible.length) {
     list.innerHTML = '<div class="empty-list">No hay resultados con los filtros actuales.</div>';
     return;
   }
 
-  list.innerHTML = visible.map((feature) => {
-    const props = feature.properties || {};
-    const selected = STATE.selectedFeatureId === feature.id ? ' selected' : '';
-    const etiqueta = esNovedadActiva(props.novedad_activa)
-      ? 'Novedad activa'
-      : (props.tipo_novedad_ejecucion || props.estado || 'Pendiente');
+  const extraCount = allVisible.length - visible.length;
 
-    return `
-      <button class="route-item${selected}" data-feature-id="${feature.id}">
-        <span class="route-title">${valorSeguro(obtenerMicrorruta(props))}</span>
-        <span class="route-meta">
-          ${valorSeguro(props.cuadrilla_display || obtenerCuadrilla(props))} ·
-          Lote ${valorSeguro(obtenerLote(props))}
-        </span>
-        <span class="route-status">${valorSeguro(etiqueta)}</span>
-      </button>
-    `;
-  }).join('');
+  list.innerHTML = `
+    ${visible.map((feature) => {
+      const props = feature.properties || {};
+      const selected = STATE.selectedFeatureId === feature.id ? ' selected' : '';
+      const etiqueta = esNovedadActiva(props.novedad_activa)
+        ? 'Novedad activa'
+        : (props.tipo_novedad_ejecucion || props.estado || 'Pendiente');
 
-  list.querySelectorAll('[data-feature-id]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const feature = STATE.microrrutasData.find(
-        (item) => String(item.id) === btn.dataset.featureId
-      );
+      return `
+        <button class="route-item${selected}" data-feature-id="${feature.id}">
+          <span class="route-title">${valorSeguro(obtenerMicrorruta(props))}</span>
+          <span class="route-meta">
+            ${valorSeguro(props.cuadrilla_display || obtenerCuadrilla(props))} ·
+            Lote ${valorSeguro(obtenerLote(props))}
+          </span>
+          <span class="route-status">${valorSeguro(etiqueta)}</span>
+        </button>
+      `;
+    }).join('')}
 
-      if (!feature) return;
-
-      STATE.selectedFeatureId = feature.id;
-      renderInfoPanel(feature);
-
-      if (STATE.geojsonLayer) {
-        STATE.geojsonLayer.eachLayer((layer) => {
-          if (layer.feature?.id === feature.id) {
-            const bounds = layer.getBounds?.();
-            if (bounds?.isValid?.()) {
-              STATE.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
-            } else if (layer.getLatLng) {
-              STATE.map.flyTo(layer.getLatLng(), 18);
-            }
-          }
-        });
-      }
-
-      renderLayersList();
-    });
-  });
+    ${extraCount > 0
+      ? `<div class="empty-list">Mostrando ${visible.length} de ${allVisible.length} resultados. Usa la búsqueda para filtrar.</div>`
+      : ''}
+  `;
 }
-
-/* =========================
-   Stats
-========================= */
 
 export function updateStats() {
   const data = STATE.microrrutasData || [];
@@ -520,12 +577,10 @@ export function updateStats() {
   if (reportedEl) reportedEl.textContent = reportadasConNovedad;
 }
 
-/* =========================
-   UI events
-========================= */
-
 export function setupUI(renderApp) {
   document.getElementById('refresh-data')?.addEventListener('click', () => {
+    invalidateVisibleCache();
+    limpiarCacheDetalle();
     location.reload();
   });
 
@@ -548,22 +603,33 @@ export function setupUI(renderApp) {
     }
   }
 
-  searchInput?.addEventListener('input', (e) => {
-    STATE.searchTerm = e.target.value || '';
-    renderApp();
-    syncClearButton();
+  let searchTimeout;
 
-    if (STATE.searchTerm.trim()) {
-      zoomToFirstVisibleResult();
-    }
+  searchInput?.addEventListener('input', (e) => {
+    clearTimeout(searchTimeout);
+
+    searchTimeout = setTimeout(() => {
+      STATE.searchTerm = e.target.value || '';
+      invalidateVisibleCache();
+
+      renderApp({ fitBounds: false });
+      syncClearButton();
+
+      if (STATE.searchTerm.trim()) {
+        zoomToFirstVisibleResult();
+      }
+    }, 300);
   });
 
   clearSearch?.addEventListener('click', () => {
     if (!searchInput) return;
 
+    clearTimeout(searchTimeout);
     searchInput.value = '';
     STATE.searchTerm = '';
-    renderApp();
+    invalidateVisibleCache();
+
+    renderApp({ fitBounds: false });
     syncClearButton();
     searchInput.focus();
   });
@@ -578,7 +644,8 @@ export function setupUI(renderApp) {
         STATE.activeFilters.delete(checkbox.value);
       }
 
-      renderApp();
+      invalidateVisibleCache();
+      renderApp({ fitBounds: false });
 
       if (STATE.searchTerm.trim()) {
         zoomToFirstVisibleResult();
