@@ -35,7 +35,9 @@ function setupMobileLayersToggle() {
   backdrop.addEventListener('click', closeSidebar);
 
   layersList?.addEventListener('click', (e) => {
-    if (window.innerWidth <= 860 && e.target.closest('.route-item')) closeSidebar();
+    if (window.innerWidth <= 860 && e.target.closest('.route-item')) {
+      closeSidebar();
+    }
   });
 
   window.addEventListener('resize', () => {
@@ -47,17 +49,25 @@ function setupMobileLayersToggle() {
   });
 }
 
-function renderApp() {
-  renderMap();
+function renderApp(options = {}) {
+  renderMap({
+    fitBounds: options.fitBounds !== false
+  });
+
   updateStats();
   renderLayersList();
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
   STATE.geojsonFiles = CONFIG.GEOJSON_FILES;
+
   initMap();
   setupUI(renderApp);
+
   await loadAllData();
-  renderApp();
+
+
+  renderApp({ fitBounds: true });
+
   setupMobileLayersToggle();
 });
