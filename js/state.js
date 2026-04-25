@@ -3,8 +3,10 @@ export const STATE = {
   geojsonLayer: null,
   baseLayers: null,
   geojsonFiles: [],
+
   microrrutasData: [],
   sheetData: [],
+
   activeFilters: new Set([
     'Pendiente',
     'En proceso',
@@ -13,6 +15,12 @@ export const STATE = {
     'No ejecutado con novedad',
     'Reportadas con novedad'
   ]),
+
   selectedFeatureId: null,
-  searchTerm: ''
+  searchTerm: '',
+
+  layerIndex: {},
+
+  _visibleCache: null,
+  _visibleCacheKey: ''
 };
